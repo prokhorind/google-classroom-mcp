@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	googleclassroom "google.golang.org/api/classroom/v1"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 )
 
@@ -21,6 +22,9 @@ var scopes = []string{
 	googleclassroom.ClassroomStudentSubmissionsStudentsReadonlyScope,
 	googleclassroom.ClassroomCourseworkMeScope,
 	googleclassroom.ClassroomRostersReadonlyScope,
+	googleclassroom.ClassroomProfileEmailsScope,
+	googleclassroom.ClassroomProfilePhotosScope,
+	drive.DriveReadonlyScope,
 }
 
 // NewService creates an authenticated Google Classroom service.

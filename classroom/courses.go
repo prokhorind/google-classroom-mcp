@@ -34,7 +34,25 @@ func ListCourses(ctx context.Context, svc *googleclassroom.Service) ([]Course, e
 	return courses, nil
 }
 
-// ListAssignments returns all coursework items for a given course.
+type StudentProfile struct {
+	ID       string `json:"id"`
+	FullName string `json:"full_name"`
+	Email    string `json:"email"`
+}
+
+// GetStudentProfile fetches name and email for a user ID within a course.
+func GetStudentProfile(ctx context.Context, svc *googleclassroom.Service, courseID, userID string) (StudentProfile, error) {
+	s, err := svc.Courses.Students.Get(courseID, userID).Context(ctx).Do()
+	if err != nil {
+		return StudentProfile{ID: userID}, fmt.Errorf("fetching student profile %s: %w", userID, err)
+	}
+	return StudentProfile{
+		ID:       userID,
+		FullName: s.Profile.Name.FullName,
+		Email:    s.Profile.EmailAddress,
+	}, nil
+}
+
 func ListAssignments(ctx context.Context, svc *googleclassroom.Service, courseID string) ([]Assignment, error) {
 	var assignments []Assignment
 	err := svc.Courses.CourseWork.List(courseID).Pages(ctx, func(page *googleclassroom.ListCourseWorkResponse) error {

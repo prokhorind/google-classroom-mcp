@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"github.com/caarlos0/env/v11"
-	"github.com/prokhorind/google-classroom-mcp/classroom"
 	"log"
 	"os"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prokhorind/google-classroom-mcp/classroom"
+	"github.com/prokhorind/google-classroom-mcp/tools"
 )
 
 // Config holds all runtime configuration sourced from environment variables.
@@ -33,28 +35,25 @@ func main() {
 		log.Fatalf("create .secrets dir: %v", err)
 	}
 
-	svc, _, err := classroom.NewService(ctx, cfg.CredentialsFile, cfg.TokenFile)
+	svc, httpClient, err := classroom.NewService(ctx, cfg.CredentialsFile, cfg.TokenFile)
 	if err != nil {
 		log.Fatalf("failed to create classroom service: %v", err)
 	}
 
-	courses, err := classroom.ListCourses(ctx, svc)
+	//courses, err := classroom.ListCourses(ctx, svc)
+	//if err != nil {
+	//	log.Fatalf("listing courses: %v", err)
+	//}
+	//enc := json.NewEncoder(os.Stdout)
+	//enc.SetIndent("", "  ")
+	//enc.Encode(courses)
 
-	if err != nil {
-		log.Fatalf("listing courses: %v", err)
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "google-classroom-mcp",
+		Version: "v1.0.0",
+	}, nil)
+	tools.Register(server, svc, httpClient, cfg.SubmissionsDir)
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		log.Fatalf("server error: %v", err)
 	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	enc.Encode(courses)
-
-	// --- MCP server (commented out for API testing) ---
-	// server := mcp.NewServer(&mcp.Implementation{
-	// 	Name:    "google-classroom-mcp",
-	// 	Version: "v1.0.0",
-	// }, nil)
-	// tools.Register(server, svc, httpClient, cfg.SubmissionsDir)
-	// if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
-	// 	log.Fatalf("server error: %v", err)
-	// }
 }
