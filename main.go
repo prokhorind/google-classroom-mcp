@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,14 +14,17 @@ import (
 
 // Config holds all runtime configuration sourced from environment variables.
 type Config struct {
-	// Path to credentials.json downloaded from Google Cloud Console.
-	CredentialsFile string `env:"GOOGLE_CREDENTIALS_FILE" envDefault:".secrets/credentials.json"`
+	// OAuth2 client credentials from Google Cloud Console.
+	ClientID     string `env:"GOOGLE_CLIENT_ID,required"`
+	ClientSecret string `env:"GOOGLE_CLIENT_SECRET,required"`
 
 	// Path where the OAuth2 token is cached after the first auth flow.
-	TokenFile string `env:"GOOGLE_TOKEN_FILE" envDefault:".secrets/token.json"`
+	// Should be an absolute path when running as an MCP server.
+	TokenFile string `env:"GOOGLE_TOKEN_FILE,required"`
 
 	// Base directory where student submissions are saved.
-	SubmissionsDir string `env:"SUBMISSIONS_DIR" envDefault:"./submissions"`
+	// Should be an absolute path when running as an MCP server.
+	SubmissionsDir string `env:"SUBMISSIONS_DIR,required"`
 }
 
 func main() {
@@ -31,28 +35,23 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
-	if err := os.MkdirAll(".secrets", 0700); err != nil {
-		log.Fatalf("create .secrets dir: %v", err)
+	// Ensure token directory exists
+	if err := os.MkdirAll(filepath.Dir(cfg.TokenFile), 0700); err != nil {
+		log.Fatalf("creating token dir: %v", err)
 	}
 
-	svc, httpClient, err := classroom.NewService(ctx, cfg.CredentialsFile, cfg.TokenFile)
+	svc, httpClient, err := classroom.NewService(ctx, cfg.ClientID, cfg.ClientSecret, cfg.TokenFile)
 	if err != nil {
 		log.Fatalf("failed to create classroom service: %v", err)
 	}
-
-	//courses, err := classroom.ListCourses(ctx, svc)
-	//if err != nil {
-	//	log.Fatalf("listing courses: %v", err)
-	//}
-	//enc := json.NewEncoder(os.Stdout)
-	//enc.SetIndent("", "  ")
-	//enc.Encode(courses)
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "google-classroom-mcp",
 		Version: "v1.0.0",
 	}, nil)
+
 	tools.Register(server, svc, httpClient, cfg.SubmissionsDir)
+
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

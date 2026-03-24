@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prokhorind/google-classroom-mcp/classroom"
@@ -18,26 +16,7 @@ import (
 type GetSubmissionsInput struct {
 	ClassName string `json:"class_name" jsonschema:"Human-readable course name, partial match supported"`
 	TaskName  string `json:"task_name"  jsonschema:"Human-readable assignment name, partial match supported"`
-	OutputDir string `json:"output_dir" jsonschema:"Base directory to save files, defaults to ./submissions"`
-}
-
-type SaveGradeInput struct {
-	CourseID        string  `json:"course_id"        jsonschema:"The course ID returned by get_submissions"`
-	AssignmentTitle string  `json:"assignment_title" jsonschema:"The assignment title returned by get_submissions"`
-	StudentID       string  `json:"student_id"       jsonschema:"The student ID returned by get_submissions"`
-	Grade           float64 `json:"grade"            jsonschema:"Numeric grade to assign"`
-	MaxGrade        float64 `json:"max_grade"        jsonschema:"Maximum possible grade"`
-	AnswerFile      string  `json:"answer_file"      jsonschema:"Path to the teacher reference answer file used for grading"`
-	Feedback        string  `json:"feedback"         jsonschema:"Optional grading notes or feedback for the student"`
-}
-
-type GradeEntry struct {
-	StudentID  string    `json:"student_id"`
-	Grade      float64   `json:"grade"`
-	MaxGrade   float64   `json:"max_grade"`
-	AnswerFile string    `json:"answer_file"`
-	Feedback   string    `json:"feedback,omitempty"`
-	GradedAt   time.Time `json:"graded_at"`
+	OutputDir string `json:"output_dir" jsonschema:"Base directory to save files, defaults to the connected workspace root"`
 }
 
 // Register adds all tools to the MCP server.
@@ -45,10 +24,10 @@ func Register(server *mcp.Server, svc *googleclassroom.Service, httpClient *http
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_submissions",
 		Description: "Resolve a course and assignment by name, download all student submissions locally, and return their file paths for grading.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetSubmissionsInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in GetSubmissionsInput) (*mcp.CallToolResult, any, error) {
 		outDir := in.OutputDir
 		if outDir == "" {
-			outDir = submissionsDir
+			outDir = resolveOutputDir(ctx, req, submissionsDir)
 		}
 
 		course, err := findCourse(ctx, svc, in.ClassName)
@@ -75,22 +54,6 @@ func Register(server *mcp.Server, svc *googleclassroom.Service, httpClient *http
 			"output_dir":       outDir,
 			"submissions":      submissions,
 		})
-	})
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "save_grade",
-		Description: "Save a grade and feedback for a student locally to <output_dir>/<course_id>/<assignment_title>/grades.json. Reads the answer file to record the reference used for grading.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in SaveGradeInput) (*mcp.CallToolResult, any, error) {
-		if in.AnswerFile == "" {
-			return nil, nil, fmt.Errorf("answer_file is required")
-		}
-		if _, err := os.Stat(in.AnswerFile); err != nil {
-			return nil, nil, fmt.Errorf("answer_file not found: %s", in.AnswerFile)
-		}
-		if err := saveGrade(in, submissionsDir); err != nil {
-			return nil, nil, err
-		}
-		return textResult(fmt.Sprintf("Grade %.1f/%.1f saved for student %s", in.Grade, in.MaxGrade, in.StudentID))
 	})
 }
 
@@ -124,44 +87,20 @@ func findAssignment(ctx context.Context, svc *googleclassroom.Service, courseID,
 	return classroom.Assignment{}, fmt.Errorf("no assignment matching %q", name)
 }
 
-func saveGrade(in SaveGradeInput, submissionsDir string) error {
-	dir := filepath.Join(submissionsDir, in.CourseID, classroom.Sanitize(in.AssignmentTitle))
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	gradesFile := filepath.Join(dir, "grades.json")
-
-	var grades []GradeEntry
-	if data, err := os.ReadFile(gradesFile); err == nil {
-		_ = json.Unmarshal(data, &grades)
-	}
-
-	entry := GradeEntry{
-		StudentID:  in.StudentID,
-		Grade:      in.Grade,
-		MaxGrade:   in.MaxGrade,
-		AnswerFile: in.AnswerFile,
-		Feedback:   in.Feedback,
-		GradedAt:   time.Now().UTC(),
-	}
-	updated := false
-	for i, g := range grades {
-		if g.StudentID == in.StudentID {
-			grades[i] = entry
-			updated = true
-			break
+// resolveOutputDir returns the best available output directory.
+// Priority: first workspace root from client → SUBMISSIONS_DIR env fallback.
+func resolveOutputDir(ctx context.Context, req *mcp.CallToolRequest, fallback string) string {
+	if req != nil && req.Session != nil {
+		result, err := req.Session.ListRoots(ctx, &mcp.ListRootsParams{})
+		if err == nil && result != nil && len(result.Roots) > 0 {
+			uri := result.Roots[0].URI
+			path := strings.TrimPrefix(uri, "file://")
+			if path != "" {
+				return filepath.Join(path, "submissions")
+			}
 		}
 	}
-	if !updated {
-		grades = append(grades, entry)
-	}
-
-	data, err := json.MarshalIndent(grades, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(gradesFile, data, 0644)
+	return fallback
 }
 
 func textResult(v any) (*mcp.CallToolResult, any, error) {

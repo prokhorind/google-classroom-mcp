@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 
@@ -27,27 +26,24 @@ var scopes = []string{
 	drive.DriveReadonlyScope,
 }
 
-// NewService creates an authenticated Google Classroom service.
-// credentialsFile is the path to credentials.json from Google Cloud Console.
-// tokenFile is where the OAuth2 token is cached after the first auth flow.
-// Returns the service and the underlying HTTP client (reused for Drive).
-func NewService(ctx context.Context, credentialsFile, tokenFile string) (*googleclassroom.Service, *http.Client, error) {
-	data, err := os.ReadFile(credentialsFile)
-	if err != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", credentialsFile, err)
+func oauthConfig(clientID, clientSecret string) *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint:     google.Endpoint,
+		Scopes:       scopes,
+		RedirectURL:  "urn:ietf:wg:oauth:2.0:oob",
 	}
+}
 
-	config, err := google.ConfigFromJSON(data, scopes...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parsing credentials.json: %w", err)
-	}
+// NewService creates an authenticated Google Classroom service.
+// Fails immediately if no cached token exists — run `go run ./cmd/auth` first.
+func NewService(ctx context.Context, clientID, clientSecret, tokenFile string) (*googleclassroom.Service, *http.Client, error) {
+	config := oauthConfig(clientID, clientSecret)
 
 	tok, err := loadToken(tokenFile)
 	if err != nil {
-		tok, err = runAuthFlow(ctx, config, tokenFile)
-		if err != nil {
-			return nil, nil, fmt.Errorf("auth flow: %w", err)
-		}
+		return nil, nil, fmt.Errorf("no token found at %s — run `go run ./cmd/auth` first: %w", tokenFile, err)
 	}
 
 	httpClient := config.Client(ctx, tok)
@@ -56,6 +52,31 @@ func NewService(ctx context.Context, credentialsFile, tokenFile string) (*google
 		return nil, nil, fmt.Errorf("creating classroom service: %w", err)
 	}
 	return svc, httpClient, nil
+}
+
+// RunAuthFlow performs the OAuth2 browser flow and saves the token to tokenFile.
+func RunAuthFlow(ctx context.Context, clientID, clientSecret, tokenFile string) error {
+	config := oauthConfig(clientID, clientSecret)
+
+	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+	fmt.Printf("\nOpen this URL in your browser:\n\n%s\n\nPaste the authorization code: ", authURL)
+
+	var code string
+	if _, err := fmt.Scan(&code); err != nil {
+		return fmt.Errorf("reading auth code: %w", err)
+	}
+
+	tok, err := config.Exchange(ctx, code)
+	if err != nil {
+		return fmt.Errorf("exchanging auth code: %w", err)
+	}
+
+	if err := saveToken(tokenFile, tok); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+
+	fmt.Printf("\nToken saved to %s — you can now run the MCP server.\n", tokenFile)
+	return nil
 }
 
 func loadToken(path string) (*oauth2.Token, error) {
@@ -75,28 +96,4 @@ func saveToken(path string, tok *oauth2.Token) error {
 	}
 	defer f.Close()
 	return json.NewEncoder(f).Encode(tok)
-}
-
-// runAuthFlow prints an auth URL, waits for the user to paste the code back.
-func runAuthFlow(ctx context.Context, config *oauth2.Config, tokenFile string) (*oauth2.Token, error) {
-	config.RedirectURL = "urn:ietf:wg:oauth:2.0:oob"
-
-	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("\nOpen this URL in your browser:\n\n%s\n\nPaste the authorization code: ", authURL)
-
-	var code string
-	if _, err := fmt.Scan(&code); err != nil {
-		return nil, fmt.Errorf("reading auth code: %w", err)
-	}
-
-	tok, err := config.Exchange(ctx, code)
-	if err != nil {
-		return nil, fmt.Errorf("exchanging auth code: %w", err)
-	}
-
-	if err := saveToken(tokenFile, tok); err != nil {
-		log.Printf("warning: could not cache token: %v", err)
-	}
-
-	return tok, nil
 }
