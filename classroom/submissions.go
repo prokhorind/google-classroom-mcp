@@ -89,16 +89,6 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 					downloaded = append(downloaded, *df)
 				}
 
-				// Student-posted comments on the submission
-				comments, err := fetchSubmissionComments(ctx, svc, courseID, courseWorkID, sub.Id)
-				if err == nil && len(comments) > 0 {
-					df, err := saveTextSubmission("comments.txt", comments, versionDir)
-					if err != nil {
-						return err
-					}
-					downloaded = append(downloaded, *df)
-				}
-
 				profile, err := GetStudentProfile(ctx, svc, courseID, sub.UserId)
 				if err != nil {
 					profile = StudentProfile{ID: sub.UserId}
@@ -120,41 +110,6 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 		})
 
 	return submissions, err
-}
-
-// fetchSubmissionComments retrieves student-posted comments on a submission.
-func fetchSubmissionComments(ctx context.Context, svc *googleclassroom.Service, courseID, courseWorkID, submissionID string) (string, error) {
-	resp, err := svc.Courses.CourseWork.StudentSubmissions.
-		List(courseID, courseWorkID).
-		Context(ctx).
-		Do()
-	if err != nil {
-		return "", err
-	}
-
-	// Find the matching submission and collect its student comments
-	var lines []string
-	for _, sub := range resp.StudentSubmissions {
-		if sub.Id != submissionID {
-			continue
-		}
-		// The API surfaces student comments via the submission's assignmentSubmission
-		// history — we use the UserProfile API for actual comments via the course stream.
-		// For now capture the submission state as a fallback note.
-		_ = sub
-	}
-
-	// Fetch via course work student submissions comments endpoint
-	commentsResp, err := svc.Courses.CourseWork.StudentSubmissions.
-		List(courseID, courseWorkID).
-		Context(ctx).
-		Do()
-	if err != nil {
-		return "", err
-	}
-	_ = commentsResp
-
-	return strings.Join(lines, "\n"), nil
 }
 
 // handleDriveAttachment downloads any Drive file, or exports Google Docs as plain text.
