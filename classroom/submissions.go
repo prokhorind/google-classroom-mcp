@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,10 +49,14 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 	timestamp := time.Now().UTC().Format("2006-01-02T15-04-05")
 	var submissions []Submission
 
+	log.Printf("[get_submissions] starting download: course=%s assignment=%q dir=%s", courseID, assignmentTitle, baseDir)
+
 	err = svc.Courses.CourseWork.StudentSubmissions.
 		List(courseID, courseWorkID).
 		Pages(ctx, func(page *googleclassroom.ListStudentSubmissionsResponse) error {
 			for _, sub := range page.StudentSubmissions {
+				log.Printf("[get_submissions] processing student=%s", sub.UserId)
+
 				// Each download is a new timestamped version
 				versionDir := filepath.Join(baseDir, courseID, Sanitize(assignmentTitle), sub.UserId, timestamp)
 				if err := os.MkdirAll(versionDir, 0755); err != nil {
@@ -67,14 +72,24 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 						var err error
 						switch {
 						case att.DriveFile != nil:
+							log.Printf("[get_submissions]   drive file: id=%s title=%q", att.DriveFile.Id, att.DriveFile.Title)
 							df, err = handleDriveAttachment(ctx, driveSvc, att.DriveFile, versionDir)
 						case att.Link != nil:
+							log.Printf("[get_submissions]   link: %s", att.Link.Url)
 							df, err = handleLinkAttachment(att.Link, versionDir)
 						}
 						if err != nil {
-							return err
+							// Log and skip files that fail to download (e.g. Google 500 on export).
+							// A failed file should not abort the entire submission batch.
+							log.Printf("[get_submissions]   ERROR: %v", err)
+							skipped := saveSkippedFile(att, err, versionDir)
+							if skipped != nil {
+								downloaded = append(downloaded, *skipped)
+							}
+							continue
 						}
 						if df != nil {
+							log.Printf("[get_submissions]   saved: %s", df.Path)
 							downloaded = append(downloaded, *df)
 						}
 					}
@@ -91,12 +106,15 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 
 				profile, err := GetStudentProfile(ctx, svc, courseID, sub.UserId)
 				if err != nil {
+					log.Printf("[get_submissions]   WARN: could not fetch profile for %s: %v", sub.UserId, err)
 					profile = StudentProfile{ID: sub.UserId}
 				}
 
 				if err := writeStudentInfo(versionDir, profile); err != nil {
 					return fmt.Errorf("writing student info: %w", err)
 				}
+
+				log.Printf("[get_submissions] done student=%s name=%q files=%d", sub.UserId, profile.FullName, len(downloaded))
 
 				submissions = append(submissions, Submission{
 					StudentID:    sub.UserId,
@@ -109,6 +127,7 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 			return nil
 		})
 
+	log.Printf("[get_submissions] finished: total=%d err=%v", len(submissions), err)
 	return submissions, err
 }
 
@@ -120,7 +139,7 @@ func handleDriveAttachment(ctx context.Context, svc *drive.Service, df *googlecl
 	}
 
 	if _, isGoogleDoc := googleDocsMimeTypes[meta.MimeType]; isGoogleDoc {
-		return exportGoogleDoc(ctx, svc, df, destDir)
+		return exportGoogleDoc(ctx, svc, df, destDir, meta.MimeType)
 	}
 
 	// Download all regular files regardless of extension
@@ -132,13 +151,18 @@ func handleDriveAttachment(ctx context.Context, svc *drive.Service, df *googlecl
 }
 
 // exportGoogleDoc exports a Google Doc/Sheet/Slide as plain text.
-func exportGoogleDoc(ctx context.Context, svc *drive.Service, df *googleclassroom.DriveFile, destDir string) (*DownloadedFile, error) {
+func exportGoogleDoc(ctx context.Context, svc *drive.Service, df *googleclassroom.DriveFile, destDir string, mimeType string) (*DownloadedFile, error) {
+	exportMime := "text/plain"
+	if mimeType == "application/vnd.google-apps.spreadsheet" {
+		exportMime = "text/csv"
+	}
+
 	name := df.Title + ".txt"
 	destPath := filepath.Join(destDir, name)
 
-	resp, err := svc.Files.Export(df.Id, "text/plain").Context(ctx).Download()
+	resp, err := svc.Files.Export(df.Id, exportMime).Context(ctx).Download()
 	if err != nil {
-		return nil, fmt.Errorf("exporting google doc %s: %w", df.Title, err)
+		return nil, fmt.Errorf("exporting %q as plain text: %w", df.Title, err)
 	}
 	defer resp.Body.Close()
 
@@ -209,4 +233,26 @@ func downloadDriveFile(ctx context.Context, svc *drive.Service, fileID, destPath
 
 	_, err = io.Copy(f, resp.Body)
 	return err
+}
+
+// saveSkippedFile writes a .skipped file noting why a file could not be downloaded.
+// Returns a DownloadedFile entry so the caller knows something was recorded.
+func saveSkippedFile(att *googleclassroom.Attachment, reason error, destDir string) *DownloadedFile {
+	title := "unknown"
+	if att.DriveFile != nil {
+		title = att.DriveFile.Title
+	} else if att.Link != nil {
+		title = att.Link.Title
+	}
+
+	log.Printf("WARN: skipping attachment %q: %v", title, reason)
+
+	name := Sanitize(title) + ".skipped"
+	destPath := filepath.Join(destDir, name)
+	content := fmt.Sprintf("File: %s\nError: %v\n", title, reason)
+	if err := os.WriteFile(destPath, []byte(content), 0644); err != nil {
+		log.Printf("WARN: could not write skipped marker for %q: %v", title, err)
+		return nil
+	}
+	return &DownloadedFile{Name: name, Path: destPath}
 }

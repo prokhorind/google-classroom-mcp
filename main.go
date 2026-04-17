@@ -14,9 +14,8 @@ import (
 
 // Config holds all runtime configuration sourced from environment variables.
 type Config struct {
-	// OAuth2 client credentials from Google Cloud Console.
-	ClientID     string `env:"GOOGLE_CLIENT_ID,required"`
-	ClientSecret string `env:"GOOGLE_CLIENT_SECRET,required"`
+	// Path to the Google OAuth2 credentials JSON file from Google Cloud Console.
+	CredentialsFile string `env:"GOOGLE_CREDENTIALS_FILE,required"`
 
 	// Path where the OAuth2 token is cached after the first auth flow.
 	// Should be an absolute path when running as an MCP server.
@@ -40,7 +39,7 @@ func main() {
 		log.Fatalf("creating token dir: %v", err)
 	}
 
-	svc, httpClient, err := classroom.NewService(ctx, cfg.ClientID, cfg.ClientSecret, cfg.TokenFile)
+	svc, httpClient, err := classroom.NewService(ctx, cfg.CredentialsFile, cfg.TokenFile)
 	if err != nil {
 		log.Fatalf("failed to create classroom service: %v", err)
 	}

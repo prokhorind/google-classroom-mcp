@@ -10,9 +10,8 @@ import (
 )
 
 type Config struct {
-	ClientID     string `env:"GOOGLE_CLIENT_ID,required"`
-	ClientSecret string `env:"GOOGLE_CLIENT_SECRET,required"`
-	TokenFile    string `env:"GOOGLE_TOKEN_FILE" envDefault:".secrets/token.json"`
+	CredentialsFile string `env:"GOOGLE_CREDENTIALS_FILE,required"`
+	TokenFile       string `env:"GOOGLE_TOKEN_FILE" envDefault:".secrets/token.json"`
 }
 
 func main() {
@@ -25,7 +24,7 @@ func main() {
 		log.Fatalf("creating .secrets dir: %v", err)
 	}
 
-	if err := classroom.RunAuthFlow(context.Background(), cfg.ClientID, cfg.ClientSecret, cfg.TokenFile); err != nil {
+	if err := classroom.RunAuthFlow(context.Background(), cfg.CredentialsFile, cfg.TokenFile); err != nil {
 		log.Fatalf("auth failed: %v", err)
 	}
 }

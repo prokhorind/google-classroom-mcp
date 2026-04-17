@@ -26,20 +26,29 @@ var scopes = []string{
 	drive.DriveReadonlyScope,
 }
 
-func oauthConfig(clientID, clientSecret string) *oauth2.Config {
-	return &oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Endpoint:     google.Endpoint,
-		Scopes:       scopes,
-		RedirectURL:  "urn:ietf:wg:oauth:2.0:oob",
+// oauthConfigFromFile reads OAuth2 client credentials from a Google credentials JSON file.
+func oauthConfigFromFile(credentialsFile string) (*oauth2.Config, error) {
+	data, err := os.ReadFile(credentialsFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading credentials file %s: %w", credentialsFile, err)
 	}
+	config, err := google.ConfigFromJSON(data, scopes...)
+	if err != nil {
+		return nil, fmt.Errorf("parsing credentials file: %w", err)
+	}
+	// Override redirect URI to use the out-of-band flow (copy-paste auth code).
+	// This avoids needing a local HTTP server to receive the OAuth callback.
+	config.RedirectURL = "urn:ietf:wg:oauth:2.0:oob"
+	return config, nil
 }
 
 // NewService creates an authenticated Google Classroom service.
 // Fails immediately if no cached token exists — run `go run ./cmd/auth` first.
-func NewService(ctx context.Context, clientID, clientSecret, tokenFile string) (*googleclassroom.Service, *http.Client, error) {
-	config := oauthConfig(clientID, clientSecret)
+func NewService(ctx context.Context, credentialsFile, tokenFile string) (*googleclassroom.Service, *http.Client, error) {
+	config, err := oauthConfigFromFile(credentialsFile)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	tok, err := loadToken(tokenFile)
 	if err != nil {
@@ -55,8 +64,11 @@ func NewService(ctx context.Context, clientID, clientSecret, tokenFile string) (
 }
 
 // RunAuthFlow performs the OAuth2 browser flow and saves the token to tokenFile.
-func RunAuthFlow(ctx context.Context, clientID, clientSecret, tokenFile string) error {
-	config := oauthConfig(clientID, clientSecret)
+func RunAuthFlow(ctx context.Context, credentialsFile, tokenFile string) error {
+	config, err := oauthConfigFromFile(credentialsFile)
+	if err != nil {
+		return err
+	}
 
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	fmt.Printf("\nOpen this URL in your browser:\n\n%s\n\nPaste the authorization code: ", authURL)
