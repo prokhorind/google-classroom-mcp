@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prokhorind/google-classroom-mcp/classroom"
+	"golang.org/x/text/unicode/norm"
 	googleclassroom "google.golang.org/api/classroom/v1"
 )
 
@@ -57,30 +59,43 @@ func Register(server *mcp.Server, svc *googleclassroom.Service, httpClient *http
 	})
 }
 
-// findCourse finds a course by case-insensitive partial name match.
+// normalizeStr lowercases and applies Unicode NFC normalization so that
+// visually identical strings with different encodings (common with Cyrillic
+// and other non-ASCII scripts) compare equal.
+func normalizeStr(s string) string {
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(s)))
+}
+
+// findCourse finds a course by case-insensitive, Unicode-normalized partial name match.
 func findCourse(ctx context.Context, svc *googleclassroom.Service, name string) (classroom.Course, error) {
 	courses, err := classroom.ListCourses(ctx, svc)
 	if err != nil {
 		return classroom.Course{}, err
 	}
-	lower := strings.ToLower(name)
+	needle := normalizeStr(name)
+	log.Printf("[find_course] looking for %q (normalized: %q)", name, needle)
 	for _, c := range courses {
-		if strings.Contains(strings.ToLower(c.Name), lower) {
+		haystack := normalizeStr(c.Name)
+		log.Printf("[find_course]   candidate: %q (normalized: %q)", c.Name, haystack)
+		if strings.Contains(haystack, needle) {
 			return c, nil
 		}
 	}
 	return classroom.Course{}, fmt.Errorf("no course matching %q", name)
 }
 
-// findAssignment finds an assignment by case-insensitive partial name match.
+// findAssignment finds an assignment by case-insensitive, Unicode-normalized partial name match.
 func findAssignment(ctx context.Context, svc *googleclassroom.Service, courseID, name string) (classroom.Assignment, error) {
 	assignments, err := classroom.ListAssignments(ctx, svc, courseID)
 	if err != nil {
 		return classroom.Assignment{}, err
 	}
-	lower := strings.ToLower(name)
+	needle := normalizeStr(name)
+	log.Printf("[find_assignment] looking for %q (normalized: %q)", name, needle)
 	for _, a := range assignments {
-		if strings.Contains(strings.ToLower(a.Title), lower) {
+		haystack := normalizeStr(a.Title)
+		log.Printf("[find_assignment]   candidate: %q (normalized: %q)", a.Title, haystack)
+		if strings.Contains(haystack, needle) {
 			return a, nil
 		}
 	}
