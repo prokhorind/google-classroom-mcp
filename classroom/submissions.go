@@ -14,8 +14,74 @@ import (
 
 	googleclassroom "google.golang.org/api/classroom/v1"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
+
+const (
+	retryMaxAttempts = 3
+	retryBaseDelay   = 2 * time.Second
+)
+
+// isRetryable returns true for Google API 5xx server errors that are worth retrying.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *googleapi.Error
+	if ok := errorAs(err, &apiErr); ok {
+		return apiErr.Code >= 500 && apiErr.Code < 600
+	}
+	return false
+}
+
+// errorAs is a thin wrapper so we can keep the import of "errors" out of the main file.
+func errorAs(err error, target interface{}) bool {
+	type asInterface interface {
+		As(interface{}) bool
+	}
+	// Use the standard errors.As behaviour via the googleapi.Error pointer check.
+	var apiErr *googleapi.Error
+	switch t := target.(type) {
+	case **googleapi.Error:
+		for err != nil {
+			if e, ok := err.(*googleapi.Error); ok {
+				*t = e
+				_ = apiErr
+				return true
+			}
+			type unwrapper interface{ Unwrap() error }
+			if u, ok := err.(unwrapper); ok {
+				err = u.Unwrap()
+			} else {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// withRetry calls fn up to retryMaxAttempts times, backing off on 5xx errors.
+func withRetry(ctx context.Context, label string, fn func() error) error {
+	var err error
+	for attempt := 1; attempt <= retryMaxAttempts; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if !isRetryable(err) {
+			return err
+		}
+		delay := retryBaseDelay * time.Duration(attempt)
+		log.Printf("[retry] %s: attempt %d/%d failed with %v — retrying in %s", label, attempt, retryMaxAttempts, err, delay)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return fmt.Errorf("%s failed after %d attempts: %w", label, retryMaxAttempts, err)
+}
 
 type Submission struct {
 	StudentID    string           `json:"student_id"`
@@ -133,7 +199,12 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 
 // handleDriveAttachment downloads any Drive file, or exports Google Docs as plain text.
 func handleDriveAttachment(ctx context.Context, svc *drive.Service, df *googleclassroom.DriveFile, destDir string) (*DownloadedFile, error) {
-	meta, err := svc.Files.Get(df.Id).Fields("mimeType", "name").Context(ctx).Do()
+	var meta *drive.File
+	err := withRetry(ctx, fmt.Sprintf("fetch metadata %s", df.Title), func() error {
+		var e error
+		meta, e = svc.Files.Get(df.Id).Fields("mimeType", "name").Context(ctx).Do()
+		return e
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetching metadata for %s: %w", df.Title, err)
 	}
@@ -160,7 +231,12 @@ func exportGoogleDoc(ctx context.Context, svc *drive.Service, df *googleclassroo
 	name := df.Title + ".txt"
 	destPath := filepath.Join(destDir, name)
 
-	resp, err := svc.Files.Export(df.Id, exportMime).Context(ctx).Download()
+	var resp *http.Response
+	err := withRetry(ctx, fmt.Sprintf("export %s", df.Title), func() error {
+		var e error
+		resp, e = svc.Files.Export(df.Id, exportMime).Context(ctx).Download()
+		return e
+	})
 	if err != nil {
 		return nil, fmt.Errorf("exporting %q as plain text: %w", df.Title, err)
 	}
@@ -215,7 +291,12 @@ func Sanitize(s string) string {
 }
 
 func downloadDriveFile(ctx context.Context, svc *drive.Service, fileID, destPath string) error {
-	resp, err := svc.Files.Get(fileID).Context(ctx).Download()
+	var resp *http.Response
+	err := withRetry(ctx, fmt.Sprintf("download file %s", fileID), func() error {
+		var e error
+		resp, e = svc.Files.Get(fileID).Context(ctx).Download()
+		return e
+	})
 	if err != nil {
 		return err
 	}
