@@ -351,20 +351,50 @@ func extractPDFText(path string) (string, error) {
 
 // Cleans code text (Python, SQL, etc.)
 func cleanPDFCode(text string) string {
+	// normalize line endings
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 
 	lines := strings.Split(text, "\n")
-	var cleaned []string
+	var rebuilt []string
+	var currentLine strings.Builder
 
 	for _, line := range lines {
-		// only trim right spaces, keep indentation
-		line = strings.TrimRight(line, " ")
-		cleaned = append(cleaned, line)
+		trimmed := strings.TrimRight(line, " ")
+
+		// skip completely empty lines but flush current line
+		if strings.TrimSpace(trimmed) == "" {
+			if currentLine.Len() > 0 {
+				rebuilt = append(rebuilt, currentLine.String())
+				currentLine.Reset()
+			}
+			rebuilt = append(rebuilt, "") // preserve blank line
+			continue
+		}
+
+		// if line is short and looks like a fragment, merge
+		if len(trimmed) < 12 && !strings.HasSuffix(trimmed, ";") &&
+			!strings.HasSuffix(trimmed, "{") && !strings.HasSuffix(trimmed, "}") {
+			if currentLine.Len() > 0 {
+				currentLine.WriteString(" ")
+			}
+			currentLine.WriteString(trimmed)
+		} else {
+			// flush current line if exists
+			if currentLine.Len() > 0 {
+				rebuilt = append(rebuilt, currentLine.String())
+				currentLine.Reset()
+			}
+			rebuilt = append(rebuilt, trimmed)
+		}
 	}
 
-	result := strings.Join(cleaned, "\n")
-	return strings.TrimRight(result, "\n")
+	// flush last line
+	if currentLine.Len() > 0 {
+		rebuilt = append(rebuilt, currentLine.String())
+	}
+
+	return strings.Join(rebuilt, "\n")
 }
 
 // saveTextSubmission writes a plain text string to a file in the student dir.
