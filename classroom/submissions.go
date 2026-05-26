@@ -319,6 +319,7 @@ func handleLinkAttachment(link *googleclassroom.Link, destDir string) (*Download
 }
 
 // extractPDFText reads a PDF file from disk and returns all plain text content.
+// Extracts text from a PDF file while preserving structure
 func extractPDFText(path string) (string, error) {
 	f, r, err := pdf.Open(path)
 	if err != nil {
@@ -328,20 +329,42 @@ func extractPDFText(path string) (string, error) {
 
 	var sb strings.Builder
 	totalPages := r.NumPage()
+
 	for i := 1; i <= totalPages; i++ {
 		p := r.Page(i)
 		if p.V.IsNull() {
 			continue
 		}
+
 		text, err := p.GetPlainText(nil)
 		if err != nil {
-			// Skip pages that fail to parse rather than aborting
-			log.Printf("[get_submissions]   WARN: page %d text extraction failed: %v", i, err)
+			log.Printf("[extractPDFText] WARN page %d: %v", i, err)
 			continue
 		}
+		text = cleanPDFCode(text)
 		sb.WriteString(text)
+		sb.WriteString("\n\n")
 	}
+
 	return sb.String(), nil
+}
+
+// Cleans code text (Python, SQL, etc.)
+func cleanPDFCode(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+
+	lines := strings.Split(text, "\n")
+	var cleaned []string
+
+	for _, line := range lines {
+		// only trim right spaces, keep indentation
+		line = strings.TrimRight(line, " ")
+		cleaned = append(cleaned, line)
+	}
+
+	result := strings.Join(cleaned, "\n")
+	return strings.TrimRight(result, "\n")
 }
 
 // saveTextSubmission writes a plain text string to a file in the student dir.
