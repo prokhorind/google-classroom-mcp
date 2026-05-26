@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ledongthuc/pdf"
 	googleclassroom "google.golang.org/api/classroom/v1"
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
@@ -197,7 +198,7 @@ func DownloadSubmissions(ctx context.Context, svc *googleclassroom.Service, http
 	return submissions, err
 }
 
-// handleDriveAttachment downloads any Drive file, or exports Google Docs as plain text.
+// handleDriveAttachment downloads any Drive file, or exports Google Docs / PDFs as plain text.
 func handleDriveAttachment(ctx context.Context, svc *drive.Service, df *googleclassroom.DriveFile, destDir string) (*DownloadedFile, error) {
 	var meta *drive.File
 	err := withRetry(ctx, fmt.Sprintf("fetch metadata %s", df.Title), func() error {
@@ -213,12 +214,60 @@ func handleDriveAttachment(ctx context.Context, svc *drive.Service, df *googlecl
 		return exportGoogleDoc(ctx, svc, df, destDir, meta.MimeType)
 	}
 
-	// Download all regular files regardless of extension
+	if meta.MimeType == "application/pdf" {
+		return downloadAndExtractPDF(ctx, svc, df, destDir)
+	}
+
+	// Download all other regular files as-is
 	destPath := filepath.Join(destDir, df.Title)
 	if err := downloadDriveFile(ctx, svc, df.Id, destPath); err != nil {
 		return nil, fmt.Errorf("downloading %s: %w", df.Title, err)
 	}
 	return &DownloadedFile{Name: df.Title, Path: destPath}, nil
+}
+
+// downloadAndExtractPDF downloads a PDF from Drive using the authenticated client,
+// extracts its plain text, and saves it as <title>.txt.
+func downloadAndExtractPDF(ctx context.Context, svc *drive.Service, df *googleclassroom.DriveFile, destDir string) (*DownloadedFile, error) {
+	// Download to a temp file so ledongthuc/pdf can open it by path
+	tmp, err := os.CreateTemp("", "classroom-pdf-*.pdf")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp file for %s: %w", df.Title, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	var resp *http.Response
+	err = withRetry(ctx, fmt.Sprintf("download pdf %s", df.Title), func() error {
+		var e error
+		resp, e = svc.Files.Get(df.Id).Context(ctx).Download()
+		return e
+	})
+	if err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("downloading PDF %s: %w", df.Title, err)
+	}
+	defer resp.Body.Close()
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("writing temp PDF %s: %w", df.Title, err)
+	}
+	tmp.Close()
+
+	text, err := extractPDFText(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("extracting text from PDF %s: %w", df.Title, err)
+	}
+
+	name := df.Title + ".txt"
+	destPath := filepath.Join(destDir, name)
+	if err := os.WriteFile(destPath, []byte(text), 0644); err != nil {
+		return nil, fmt.Errorf("writing extracted PDF text for %s: %w", df.Title, err)
+	}
+
+	log.Printf("[get_submissions]   extracted %d bytes of text from PDF %s", len(text), df.Title)
+	return &DownloadedFile{Name: name, Path: destPath}, nil
 }
 
 // exportGoogleDoc exports a Google Doc/Sheet/Slide as plain text.
@@ -267,6 +316,32 @@ func handleLinkAttachment(link *googleclassroom.Link, destDir string) (*Download
 		return nil, fmt.Errorf("saving link %s: %w", link.Url, err)
 	}
 	return &DownloadedFile{Name: name, Path: destPath}, nil
+}
+
+// extractPDFText reads a PDF file from disk and returns all plain text content.
+func extractPDFText(path string) (string, error) {
+	f, r, err := pdf.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var sb strings.Builder
+	totalPages := r.NumPage()
+	for i := 1; i <= totalPages; i++ {
+		p := r.Page(i)
+		if p.V.IsNull() {
+			continue
+		}
+		text, err := p.GetPlainText(nil)
+		if err != nil {
+			// Skip pages that fail to parse rather than aborting
+			log.Printf("[get_submissions]   WARN: page %d text extraction failed: %v", i, err)
+			continue
+		}
+		sb.WriteString(text)
+	}
+	return sb.String(), nil
 }
 
 // saveTextSubmission writes a plain text string to a file in the student dir.
